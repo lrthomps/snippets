@@ -1,3 +1,5 @@
+from difflib import context_diff
+import git
 import logging
 
 import numpy as np
@@ -381,3 +383,28 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         output = self._relative_attention_inner(attention_weights, v, av, transpose=False, batch_size=batch_size)
 
         return tf.reshape(output, (batch_size, self.seq_len, output.shape[-1]))
+
+
+def get_repo_state():
+    """
+    commit_hash, is_dirty, diffs = get_repo_state()
+    print(git_hash)
+    if is_dirty:
+        for mod_file in diffs:
+            for line in mod_file:
+                print(line)
+    :return:
+    """
+    repo = git.Repo(search_parent_directories=True)
+    commit_hash = repo.head.object.hexsha
+    is_dirty = repo.is_dirty()
+
+    diffs = []
+    if is_dirty:
+        for diff_item in repo.index.diff(None).iter_change_type('M'):
+            file_orig = diff_item.a_blob.data_stream.read().decode('utf-8').split('\n')
+            with open(diff_item.a_path, 'r') as f:
+                file_now = f.read().splitlines()
+            diffs.append(context_diff(file_orig, file_now))
+
+    return commit_hash, is_dirty, diffs

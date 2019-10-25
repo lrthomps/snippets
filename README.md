@@ -136,3 +136,14 @@ snakeviz profile
                 till exit). This figure is accurate even for recursive functions. 
 
 * **percall**    is the quotient of cumtime divided by primitive calls 
+
+## Useful linux
+
+* powerful remote and local file transfer:
+  ```
+  rsync --info=progress2 from_path to_path
+  ``` 
+  [progress explained][rsync_prog2]. I always use rsync for backing up
+  large/many files, even (esp) locally on Mac.
+
+[rsync_prog2]: https://unix.stackexchange.com/questions/215271/understanding-the-output-of-info-progress2-from-rsync
