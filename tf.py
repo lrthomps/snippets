@@ -6,6 +6,31 @@ import numpy as np
 import tensorflow as tf
 
 
+def get_repo_state():
+    """
+    commit_hash, is_dirty, diffs = get_repo_state()
+    print(git_hash)
+    if is_dirty:
+        for mod_file in diffs:
+            for line in mod_file:
+                print(line)
+    :return:
+    """
+    repo = git.Repo(search_parent_directories=True)
+    commit_hash = repo.head.object.hexsha
+    is_dirty = repo.is_dirty()
+
+    diffs = []
+    if is_dirty:
+        for diff_item in repo.index.diff(None).iter_change_type('M'):
+            file_orig = diff_item.a_blob.data_stream.read().decode('utf-8').split('\n')
+            with open(diff_item.a_path, 'r') as f:
+                file_now = f.read().splitlines()
+            diffs.append(context_diff(file_orig, file_now))
+
+    return commit_hash, is_dirty, diffs
+
+
 class FullModelCheckpoint(tf.keras.callbacks.ModelCheckpoint):
     """ must use FullModelCheckpoint hacked to save optimizer (for when model is not serializable)
     ckpt = tf.train.Checkpoint(model=model, optimizer=optimizer)
@@ -87,20 +112,7 @@ def limit_tf_gpu(memory_limit_kB):
             # Virtual devices must be set before GPUs have been initialized
             print(e)
 
-
-def mish(x):
-    return tf.multiply(x, tf.tanh(tf.math.softplus(x)))
-
-
-def swish(x, beta=1):
-    return tf.multiply(x, tf.sigmoid(beta * x))
-
-
-default_activation = tf.keras.layers.Activation(mish)
-
-
-def conv_normd(num_filters, kernel_size, stride=1, dilation=1, name=None, activation=None):
-    activation = activation or default_activation
+def conv_normd(num_filters, kernel_size, stride=1, dilation=1, name=None, activation='relu'):
     return tf.keras.Sequential([
         tf.keras.layers.Conv1D(num_filters, kernel_size, padding='same', strides=stride, dilation_rate=dilation,
                                activation=activation),
@@ -109,100 +121,6 @@ def conv_normd(num_filters, kernel_size, stride=1, dilation=1, name=None, activa
 
 
 # ATTENTION!
-
-class TwoNeighSelfAttn(tf.keras.layers.Layer):
-    def __init__(self, num_channels, num_heads, dilation_factor=1):
-        super(TwoNeighSelfAttn, self).__init__()
-        self.num_heads = num_heads
-        self.num_channels = num_channels
-
-        assert num_channels % self.num_heads == 0
-
-        self.depth = num_channels // self.num_heads
-
-        if dilation_factor > 1:
-            self.upsample = tf.keras.layers.UpSampling1D(size=dilation_factor)
-        else:
-            self.upsample = None
-
-        self.wq = tf.keras.layers.Dense(num_channels)
-        self.wk = tf.keras.layers.Dense(num_channels)
-        self.wv = tf.keras.layers.Dense(num_channels)
-
-        self.context = tf.keras.layers.Conv2D(num_heads, 1, activation='tanh')
-
-        self.final = tf.keras.layers.Conv1D(num_channels, 1, activation=default_activation)
-
-    def split_heads(self, x, batch_size):
-        """Split the last dimension into (num_heads, depth).
-        Transpose the result such that the shape is (batch_size, num_heads, seq_len, depth)
-        """
-        x = tf.reshape(x, (batch_size, -1, self.num_heads, self.depth))
-        x = tf.transpose(x, perm=[0, 2, 1, 3])
-        return tf.reshape(x, (batch_size * self.num_heads, -1, self.depth))
-
-    def merge_heads(self, x, batch_size, seq_len):
-        x = tf.reshape(x, (batch_size, self.num_heads, seq_len, -1))
-        x = tf.transpose(x, perm=[0, 2, 1, 3])
-        return tf.reshape(x, (batch_size, seq_len, -1))
-
-    def call(self, x, y, t_mat):
-        batch_size = tf.shape(x)[0]
-        seq_len = tf.shape(x)[1]
-
-        if self.upsample:
-            y = self.upsample(y)
-
-        q = self.wq(y)  # (batch_size, seq_len, num_channels)
-        k = self.wk(x)  # (batch_size, seq_len, num_channels)
-        v = self.wv(y)  # (batch_size, seq_len, num_channels)
-
-        q = self.split_heads(q, batch_size)  # (batch_size * num_heads, seq_len, depth)
-        k = self.split_heads(k, batch_size)  # (batch_size * num_heads, seq_len, depth)
-        v = self.split_heads(v, batch_size)  # (batch_size * num_heads, seq_len, depth)
-
-        c = self.context(tf.expand_dims(t_mat, 3))  # (batch_size, seq_len, seq_len, num_heads)
-        c = tf.transpose(c, perm=[0, 3, 1, 2])  # (batch_size, num_heads, seq_len, seq_len)
-        c = tf.reshape(c, (batch_size * self.num_heads, seq_len, seq_len))
-
-        # scaled_attention.shape == (batch_size * num_heads, seq_len_q, depth)
-        # attention_weights.shape == (batch_size * num_heads, seq_len_q, seq_len_k)
-        scaled_attention = nn_scaled_dot_product_attention(q, k, v, c)
-
-        concat_attention = self.merge_heads(
-            scaled_attention, batch_size, seq_len)  # (batch_size, seq_len_q, num_channels)
-        # attention_weights = self.merge_heads(attention_weights, batch_size, seq_len)
-
-        output = self.final(concat_attention)  # (batch_size, seq_len_q, num_channels)
-        return output
-
-
-def nn_scaled_dot_product_attention(q, k, v, c):
-    """Calculate the attention weights.
-    q, k, v, ak, av must have matching leading dimensions.
-    k, v must have matching penultimate dimension, i.e.: seq_len_k = seq_len_v.
-    The mask has different shapes depending on its type(padding or look ahead)
-    but it must be broadcastable for addition.
-
-    Args:
-      q: query shape == (batch, num_heads, seq_len_q, depth)
-      k: key shape == (batch, num_heads, seq_len_k, depth)
-      v: value shape == (batch, num_heads, seq_len_v, depth_v)
-      c: rel position encoding == (batch, num_heads, seq_len_k, seq_len_k)
-
-    Returns:
-      output, attention_weights
-    """
-    # scale matmul_qk
-    dk = tf.cast(tf.shape(k)[-1], tf.float32)
-
-    matmul_qk = tf.matmul(k, q, transpose_b=True) / tf.math.sqrt(dk)  # (batch * num_heads, seq_len, seq_len)
-    cv = tf.matmul(c, v, transpose_b=False)  # (batch * num_heads, seq_len, depth)
-
-    output = tf.matmul(matmul_qk, cv, transpose_b=False)  # (batch * num_heads, seq_len, depth)
-
-    return output
-
 
 def init_vec(seq_len):
     return (np.arange(2 * seq_len) - seq_len + 1)[:, np.newaxis]
@@ -217,56 +135,14 @@ def unroll_rel_pos(a, batch_size, seq_len):
     return tf.tile(tf.expand_dims(a, 0), (batch_size, 1, 1, 1))
 
 
-class LocalUnetAttn(tf.keras.layers.Layer):
-    def __init__(self, num_blocks, in_channels, inter_channels, dilation_factor, attn_kernel):
-        super(LocalUnetAttn, self).__init__()
-
-        self.gate_blocks = [AttentionBlock(in_channels, inter_channels, dilation_factor, attn_kernel)
-                            for _ in range(num_blocks)]
-        self.combine_gates = conv_normd(in_channels, kernel_size=1)
-
-    def call(self, input, gating_signal):
-        gates, attns = [], []
-        for block in self.gate_blocks:
-            gate, attn = block(input, gating_signal)
-            gates.append(gate)
-            attns.append(attn)
-
-        return self.combine_gates(tf.concat(gates, axis=-1)), tf.concat(attns, axis=-1)
-
-
-class AttentionBlock(tf.keras.layers.Layer):
-    def __init__(self, in_channels, inter_channels, dilation_factor, attn_kernel):
-        super(AttentionBlock, self).__init__()
-
-        self.W = conv_normd(in_channels, kernel_size=1)
-        self.theta = tf.keras.layers.Conv1D(inter_channels, dilation_factor, padding='same', use_bias=False,
-                                            strides=dilation_factor, activation=default_activation)
-
-        self.phi = tf.keras.layers.Conv1D(inter_channels, 1, padding='same', activation=default_activation)
-
-        self.psi = tf.keras.layers.Conv1D(1, attn_kernel, padding='same', activation='sigmoid')
-
-        self.upsample = tf.keras.layers.UpSampling1D(size=dilation_factor)
-
-    def call(self, x, g):
-        # (batch size, seq len / 2^n, filters[n]), (batch size, seq len / 2^n+1, filters[n+1])
-
-        theta_x = self.theta(x)  # (batch size, seq len / 2^n+1, inter_channels)
-        phi_g = self.phi(g)  # (batch size, seq len / 2^n + 1, inter_channels)
-
-        f = tf.nn.relu(theta_x + phi_g)
-        attn = self.psi(f)  # (batch size, seq len / 2^n + 1, 1)
-        y = tf.multiply(self.upsample(attn), x)  # (batch size, seq len / 2^n, filters[n])
-        gate = self.W(y)  # (batch size, seq len / 2^n, filters[n])
-
-        return gate, attn
-
-
 class MultiHeadAttention(tf.keras.layers.Layer):
-    def __init__(self, d_model, num_heads, seq_len, dilation_factor=1):
+    """
+    from 'Attention is all you Need' applied to a time sequence
+    there is possibly a transformation of the time sequence in key vs query and value that requires
+    upsampling by a dilation_factor
+    """
+    def __init__(self, d_model, num_heads, seq_len, dilation_factor=1, activation='relu'):
         super(MultiHeadAttention, self).__init__()
-        activation = default_activation
 
         self.num_heads = num_heads
         self.d_model = d_model
@@ -283,12 +159,12 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         else:
             self.upsample = None
 
-        self.wqs = [tf.keras.layers.Dense(self.depth, activation=None) for _ in range(num_heads)]
-        self.wks = [tf.keras.layers.Dense(self.depth, activation=None) for _ in range(num_heads)]
-        self.wvs = [tf.keras.layers.Dense(self.depth, activation=None) for _ in range(num_heads)]
+        self.wqs = [tf.keras.layers.Dense(self.depth, activation=activation) for _ in range(num_heads)]
+        self.wks = [tf.keras.layers.Dense(self.depth, activation=activation) for _ in range(num_heads)]
+        self.wvs = [tf.keras.layers.Dense(self.depth, activation=activation) for _ in range(num_heads)]
 
-        self.av = tf.keras.layers.Dense(self.depth, activation=None)
-        self.ak = tf.keras.layers.Dense(self.depth, activation=None)
+        self.av = tf.keras.layers.Dense(self.depth, activation=activation)
+        self.ak = tf.keras.layers.Dense(self.depth, activation=activation)
 
         self.dense = tf.keras.layers.Dense(d_model, activation=activation)
 
@@ -383,28 +259,3 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         output = self._relative_attention_inner(attention_weights, v, av, transpose=False, batch_size=batch_size)
 
         return tf.reshape(output, (batch_size, self.seq_len, output.shape[-1]))
-
-
-def get_repo_state():
-    """
-    commit_hash, is_dirty, diffs = get_repo_state()
-    print(git_hash)
-    if is_dirty:
-        for mod_file in diffs:
-            for line in mod_file:
-                print(line)
-    :return:
-    """
-    repo = git.Repo(search_parent_directories=True)
-    commit_hash = repo.head.object.hexsha
-    is_dirty = repo.is_dirty()
-
-    diffs = []
-    if is_dirty:
-        for diff_item in repo.index.diff(None).iter_change_type('M'):
-            file_orig = diff_item.a_blob.data_stream.read().decode('utf-8').split('\n')
-            with open(diff_item.a_path, 'r') as f:
-                file_now = f.read().splitlines()
-            diffs.append(context_diff(file_orig, file_now))
-
-    return commit_hash, is_dirty, diffs

@@ -109,6 +109,7 @@ I don't use conda. Personal choice?
         {[testenv]deps}
     ```
     </summary>
+    </details>
    
  
 [tox]: https://tox.readthedocs.io/en/latest/
