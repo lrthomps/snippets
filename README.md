@@ -1,7 +1,6 @@
 # snippets
 useful, reusable python, tf, etc code snippets; settings and preferences
 
-
 ## Jupyter-related notes
 
 [auto-reload][auto_reload_instructions] edited modules.
@@ -48,74 +47,13 @@ I don't use conda. Personal choice?
 
 * pyenv, virtualenv, venv, [pipenv][pipenv]? Too many options: [explained][py_envs]
 
-* [tox][tox] in turn uses pyenv
-  <details><summary>Example script with multiple environments:</summary>
-
-    ```
-    [tox]
-    envlist = py36, flake8, coverage, research
-    skipsdist = True
-    sitepackages = True
-    
-    [testenv]
-    setenv = VIRTUAL_ENV={envdir}
-             SKIP_GENERATE_AUTHORS=1
-    usedevelop = True
-    install_command =
-        pip install {opts} {packages}
-    deps =
-        -r{toxinidir}/requirements.txt
-        -r{toxinidir}/test-requirements.txt
-    whitelist_externals = sh
-    
-    
-    [testenv:py36]
-    basepython = python3.6
-    setenv = {[testenv]setenv}
-    commands =
-        pytest -v {posargs} -k tests/
-    deps =
-        {[testenv]deps}
-    
-    
-    [testenv:research]
-    basepython = python3.6
-    setenv = {[testenv]setenv}
-    commands =
-        pytest -v {posargs} -k tests/
-    deps =
-        {[testenv]deps}
-        -r{toxinidir}/research-requirements.txt
-    
-   
-    [flake8]
-    max-line-length = 119
-    
-    [testenv:flake8]
-    basepython = python3.6
-    usedevelop = False
-    deps =
-        flake8
-    commands=
-        flake8 $CODE_FOLDER(s)
-    
-    
-    [testenv:coverage]
-    basepython = python3.6
-    setenv = {[testenv]setenv}
-    commands =
-        pytest -v --cov=$CODE_FOLDER --cov-report term-missing -k tests/
-    deps =
-        {[testenv]deps}
-    ```
-    </summary>
-    </details>
+* [tox][tox] in turn uses pyenv ([example script][tox_script])
    
  
 [tox]: https://tox.readthedocs.io/en/latest/
 [pipenv]: https://docs.python-guide.org/dev/virtualenvs/
 [py_envs]: https://stackoverflow.com/questions/41573587/what-is-the-difference-between-venv-pyvenv-pyenv-virtualenv-virtualenvwrappe
-
+[tox_script]: https://github.com/lrthomps/snippets/blob/master/tox.ini
 
 ## Python Profiling
 
